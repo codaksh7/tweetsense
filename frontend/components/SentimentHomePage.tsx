@@ -18,8 +18,11 @@ import {
   TrendingDown,
   Target,
   FlaskConical,
-  MessageCircle, // Added for summary icon
-  Cloud, // Added for word cloud icon
+  MessageCircle,
+  Cloud,
+  Upload,
+  Download,
+  FileText,
 } from "lucide-react";
 import {
   PieChart,
@@ -28,19 +31,48 @@ import {
   ResponsiveContainer,
   Tooltip,
   Legend,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
 } from "recharts";
 
 // --- API Configuration ---
 const API_URL = "http://localhost:5000/api/analyze";
+const BATCH_API_URL = "http://localhost:5000/api/batch_analyze";
 
-// --- UPDATED TYPES ---
+// --- TYPES ---
 interface AnalysisResult {
   sentiment: "Positive" | "Negative" | "Neutral";
-  confidence: string; // e.g., "0.9543"
-  priority: string; // e.g., "High Priority"
+  confidence: string;
+  priority: string;
   input_length: number;
-  summary: string; // NEW FIELD for text summary
-  wordcloud_img: string; // NEW FIELD for Base64 image string
+  summary: string;
+  wordcloud_img: string;
+}
+
+interface BatchSummary {
+  total_records: number;
+  overall_summary: string;
+  sentiment_distribution: { [key: string]: number };
+  priority_distribution: { [key: string]: number };
+  avg_confidence: number;
+  avg_word_count: number;
+  wordcloud_img: string;
+}
+
+interface BatchResult {
+  text: string;
+  sentiment: string;
+  confidence: number;
+  priority: string;
+  word_count: number;
+}
+
+interface BatchAnalysisResult {
+  summary: BatchSummary;
+  individual_results: BatchResult[];
 }
 
 const getSentimentColor = (sentiment: string) => {
@@ -62,6 +94,14 @@ const SentimentHomePage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+
+  // Batch analysis states
+  const [batchLoading, setBatchLoading] = useState<boolean>(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchResult, setBatchResult] = useState<BatchAnalysisResult | null>(
+    null
+  );
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const handleAnalysis = async (): Promise<void> => {
     if (searchQuery.trim().length < 5) {
@@ -88,7 +128,6 @@ const SentimentHomePage: React.FC = () => {
       const data = await response.json();
 
       if (response.ok && data.status === "success") {
-        // Cast the data to the new interface
         setResult(data as AnalysisResult);
 
         setTimeout(() => {
@@ -111,6 +150,86 @@ const SentimentHomePage: React.FC = () => {
     }
   };
 
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (file.type !== "text/csv" && !file.name.endsWith(".csv")) {
+        setBatchError("Please upload a valid CSV file");
+        setSelectedFile(null);
+        return;
+      }
+      setSelectedFile(file);
+      setBatchError(null);
+      setBatchResult(null);
+    }
+  };
+
+  const handleBatchAnalysis = async (): Promise<void> => {
+    if (!selectedFile) {
+      setBatchError("Please select a CSV file first");
+      return;
+    }
+
+    setBatchLoading(true);
+    setBatchError(null);
+    setBatchResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      const response = await fetch(BATCH_API_URL, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.status === "success") {
+        setBatchResult(data as BatchAnalysisResult);
+        setTimeout(() => {
+          document
+            .getElementById("batch-results")
+            ?.scrollIntoView({ behavior: "smooth" });
+        }, 100);
+      } else {
+        setBatchError(data.message || "Batch analysis failed");
+      }
+    } catch (err) {
+      console.error("Batch Analysis Error:", err);
+      setBatchError(
+        `Failed to connect to the backend API. Please ensure your Flask server is running.`
+      );
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const downloadResults = () => {
+    if (!batchResult) return;
+
+    const csvContent = [
+      ["Text", "Sentiment", "Confidence", "Priority", "Word Count"],
+      ...batchResult.individual_results.map((row) => [
+        `"${row.text.replace(/"/g, '""')}"`,
+        row.sentiment,
+        row.confidence.toFixed(4),
+        row.priority,
+        row.word_count,
+      ]),
+    ]
+      .map((row) => row.join(","))
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "sentiment_analysis_results.csv";
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   const confidenceValue = result ? parseFloat(result.confidence) * 100 : 0;
   const chartData = result
     ? [
@@ -125,6 +244,26 @@ const SentimentHomePage: React.FC = () => {
           color: "#D1D5DB",
         },
       ]
+    : [];
+
+  // Prepare batch chart data
+  const batchSentimentData = batchResult
+    ? Object.entries(batchResult.summary.sentiment_distribution).map(
+        ([key, value]) => ({
+          name: key,
+          value: value,
+          color: getSentimentColor(key),
+        })
+      )
+    : [];
+
+  const batchPriorityData = batchResult
+    ? Object.entries(batchResult.summary.priority_distribution).map(
+        ([key, value]) => ({
+          name: key,
+          value: value,
+        })
+      )
     : [];
 
   const AnalysisStatCard = ({
@@ -171,7 +310,6 @@ const SentimentHomePage: React.FC = () => {
       <header className="bg-white shadow-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            {/* Logo */}
             <div className="flex items-center space-x-3">
               <div className="bg-gradient-to-r from-orange-500 to-green-600 p-2 rounded-lg">
                 <Brain className="w-6 h-6 text-white" />
@@ -186,7 +324,6 @@ const SentimentHomePage: React.FC = () => {
               </div>
             </div>
 
-            {/* Desktop Navigation */}
             <nav className="hidden md:flex items-center space-x-8">
               <a
                 href="#features"
@@ -210,7 +347,6 @@ const SentimentHomePage: React.FC = () => {
               </a>
             </nav>
 
-            {/* Mobile Menu Button */}
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               className="md:hidden p-2 rounded-lg text-gray-600 hover:text-gray-900 hover:bg-gray-100"
@@ -223,7 +359,6 @@ const SentimentHomePage: React.FC = () => {
             </button>
           </div>
 
-          {/* Mobile Menu Content */}
           {isMobileMenuOpen && (
             <div className="md:hidden py-4 border-t border-gray-200">
               <div className="flex flex-col space-y-4">
@@ -270,14 +405,13 @@ const SentimentHomePage: React.FC = () => {
             <br />
             Real-Time Twitter Sentiment
           </h1>
-
           <p className="text-xl text-gray-600 mb-10 max-w-4xl mx-auto leading-relaxed">
             Harness the power of Natural Language Processing (NLP) to classify
             the mood and opinion hidden within Twitter conversations. Paste a
             phrase or hashtag below to analyze instantly.
           </p>
 
-          {/* Analysis Input */}
+          {/* Single Text Analysis */}
           <div className="max-w-3xl mx-auto mb-8">
             <div className="relative">
               <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
@@ -300,8 +434,6 @@ const SentimentHomePage: React.FC = () => {
                 {loading ? "Analyzing..." : "Analyze"}
               </button>
             </div>
-
-            {/* Error/Loading Message */}
             {loading && <LoadingSpinner />}
             {error && (
               <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg text-sm text-left">
@@ -310,29 +442,65 @@ const SentimentHomePage: React.FC = () => {
             )}
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <button
-              onClick={handleAnalysis}
-              disabled={loading}
-              className="bg-gradient-to-r from-green-600 to-blue-600 text-white px-8 py-4 rounded-xl font-semibold hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 flex items-center justify-center disabled:opacity-50"
-            >
-              Start Sentiment Analysis
-              <Zap className="ml-2 w-5 h-5" />
-            </button>
-            <a
-              href="https://github.com/your-repo-link"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="border-2 border-gray-300 text-gray-700 px-8 py-4 rounded-xl font-semibold hover:border-orange-500 hover:text-orange-600 transition-all duration-300 flex items-center justify-center"
-            >
-              <Code className="mr-2 w-5 h-5" />
-              View Source Code
-            </a>
+          {/* Batch CSV Upload Section */}
+          <div className="max-w-3xl mx-auto mt-12 p-8 bg-white rounded-2xl shadow-xl border-2 border-dashed border-gray-300">
+            <div className="flex items-center justify-center mb-4">
+              <Upload className="w-6 h-6 text-orange-600 mr-2" />
+              <h3 className="text-2xl font-bold text-gray-900">
+                Batch CSV Analysis
+              </h3>
+            </div>
+            <p className="text-gray-600 mb-6">
+              Upload a CSV file with a 'text' column to analyze multiple tweets
+              at once
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
+              <label className="flex-1 cursor-pointer">
+                <div className="flex items-center justify-center px-6 py-3 border-2 border-orange-300 rounded-lg hover:bg-orange-50 transition-colors">
+                  <FileText className="w-5 h-5 text-orange-600 mr-2" />
+                  <span className="text-gray-700 font-medium">
+                    {selectedFile ? selectedFile.name : "Choose CSV File"}
+                  </span>
+                </div>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  className="hidden"
+                  disabled={batchLoading}
+                />
+              </label>
+
+              <button
+                onClick={handleBatchAnalysis}
+                disabled={!selectedFile || batchLoading}
+                className="px-8 py-3 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-lg font-semibold hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+              >
+                {batchLoading ? (
+                  <>
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-5 h-5 mr-2" />
+                    Analyze CSV
+                  </>
+                )}
+              </button>
+            </div>
+
+            {batchError && (
+              <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg text-sm">
+                **Error:** {batchError}
+              </div>
+            )}
           </div>
         </div>
       </section>
 
-      {/* Analysis Results Section (DYNAMIC) */}
+      {/* Single Text Analysis Results */}
       {result && (
         <section id="results" className="py-20 bg-blue-50/50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -345,9 +513,7 @@ const SentimentHomePage: React.FC = () => {
                 Classification** models.
               </p>
             </div>
-
             <div className="grid lg:grid-cols-3 gap-8">
-              {/* Result Card: Sentiment */}
               <AnalysisStatCard
                 title="Predicted Sentiment"
                 value={result.sentiment}
@@ -362,14 +528,12 @@ const SentimentHomePage: React.FC = () => {
                 }
                 color={getSentimentColor(result.sentiment)}
               />
-              {/* Result Card: Confidence */}
               <AnalysisStatCard
                 title="Model Confidence"
                 value={`${(parseFloat(result.confidence) * 100).toFixed(2)}%`}
                 icon={<FlaskConical className="w-5 h-5" />}
                 color="#6366F1"
               />
-              {/* Result Card: Priority */}
               <AnalysisStatCard
                 title="Priority Classification"
                 value={result.priority}
@@ -377,9 +541,7 @@ const SentimentHomePage: React.FC = () => {
                 color="#F59E0B"
               />
             </div>
-
             <div className="grid lg:grid-cols-2 gap-8 mt-8">
-              {/* Pie Chart Visualization (Confidence Breakdown) */}
               <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
                 <h3 className="text-xl font-bold text-gray-900 mb-4">
                   Model Certainty
@@ -410,7 +572,6 @@ const SentimentHomePage: React.FC = () => {
                 </ResponsiveContainer>
               </div>
 
-              {/* Input Details */}
               <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
                 <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center">
                   <ClipboardCheck className="w-5 h-5 mr-2 text-gray-600" />
@@ -437,9 +598,7 @@ const SentimentHomePage: React.FC = () => {
               </div>
             </div>
 
-            {/* NEW SECTION: Summary and Word Cloud */}
             <div className="grid md:grid-cols-2 gap-8 mt-8">
-              {/* Text Summary */}
               <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
                 <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center">
                   <MessageCircle className="w-5 h-5 mr-2 text-gray-600" />
@@ -450,7 +609,6 @@ const SentimentHomePage: React.FC = () => {
                 </p>
               </div>
 
-              {/* Word Cloud */}
               <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100 flex flex-col items-center">
                 <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center">
                   <Cloud className="w-5 h-5 mr-2 text-gray-600" />
@@ -473,6 +631,207 @@ const SentimentHomePage: React.FC = () => {
         </section>
       )}
 
+      {/* Batch Analysis Results */}
+      {batchResult && (
+        <section
+          id="batch-results"
+          className="py-20 bg-gradient-to-br from-purple-50 to-pink-50"
+        >
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-center mb-12">
+              <h2 className="text-4xl font-bold text-gray-900 mb-4">
+                Batch Analysis Results
+              </h2>
+              <p className="text-xl text-gray-600 max-w-2xl mx-auto">
+                Comprehensive analysis of {batchResult.summary.total_records}{" "}
+                records
+              </p>
+            </div>
+
+            {/* Summary Statistics */}
+            <div className="grid md:grid-cols-4 gap-6 mb-8">
+              <AnalysisStatCard
+                title="Total Records"
+                value={batchResult.summary.total_records}
+                icon={<FileText className="w-5 h-5" />}
+                color="#8B5CF6"
+              />
+              <AnalysisStatCard
+                title="Avg Confidence"
+                value={`${(batchResult.summary.avg_confidence * 100).toFixed(
+                  1
+                )}%`}
+                icon={<FlaskConical className="w-5 h-5" />}
+                color="#06B6D4"
+              />
+              <AnalysisStatCard
+                title="Avg Word Count"
+                value={Math.round(batchResult.summary.avg_word_count)}
+                icon={<MessageSquare className="w-5 h-5" />}
+                color="#F59E0B"
+              />
+              <AnalysisStatCard
+                title="Analysis Complete"
+                value="✓"
+                icon={<ClipboardCheck className="w-5 h-5" />}
+                color="#10B981"
+              />
+            </div>
+
+            {/* Overall Summary */}
+            <div className="bg-white p-8 rounded-xl shadow-lg border border-gray-100 mb-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-4 flex items-center">
+                <MessageCircle className="w-6 h-6 mr-3 text-purple-600" />
+                Overall Summary
+              </h3>
+              <p className="text-gray-700 leading-relaxed text-lg italic">
+                {batchResult.summary.overall_summary}
+              </p>
+            </div>
+
+            {/* Charts Row */}
+            <div className="grid lg:grid-cols-2 gap-8 mb-8">
+              {/* Sentiment Distribution */}
+              <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
+                <h3 className="text-xl font-bold text-gray-900 mb-4">
+                  Sentiment Distribution
+                </h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={batchSentimentData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={100}
+                      label={({ name, value }) => `${name}: ${value}`}
+                    >
+                      {batchSentimentData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Priority Distribution */}
+              <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
+                <h3 className="text-xl font-bold text-gray-900 mb-4">
+                  Priority Distribution
+                </h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={batchPriorityData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Bar dataKey="value" fill="#8B5CF6" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Word Cloud */}
+            <div className="bg-white p-8 rounded-xl shadow-lg border border-gray-100 mb-8">
+              <h3 className="text-2xl font-bold text-gray-900 mb-6 flex items-center justify-center">
+                <Cloud className="w-6 h-6 mr-3 text-blue-600" />
+                Combined Word Cloud
+              </h3>
+              {batchResult.summary.wordcloud_img ? (
+                <div className="flex justify-center">
+                  <img
+                    src={batchResult.summary.wordcloud_img}
+                    alt="Batch Word Cloud"
+                    className="max-w-full h-auto rounded-lg shadow-md"
+                  />
+                </div>
+              ) : (
+                <p className="text-gray-500 text-center">
+                  Word cloud could not be generated.
+                </p>
+              )}
+            </div>
+
+            {/* Download Button */}
+            <div className="flex justify-center mb-8">
+              <button
+                onClick={downloadResults}
+                className="bg-gradient-to-r from-green-600 to-blue-600 text-white px-8 py-4 rounded-xl font-semibold hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 flex items-center text-lg"
+              >
+                <Download className="w-5 h-5 mr-2" />
+                Download Results CSV
+              </button>
+            </div>
+
+            {/* Individual Results Table */}
+            <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
+              <h3 className="text-2xl font-bold text-gray-900 mb-6">
+                Individual Results ({batchResult.individual_results.length}{" "}
+                records)
+              </h3>
+              <div className="overflow-x-auto">
+                <div className="max-h-96 overflow-y-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Text
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Sentiment
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Confidence
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Priority
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Words
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {batchResult.individual_results.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 text-sm text-gray-900 max-w-md truncate">
+                            {row.text}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span
+                              className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full text-white"
+                              style={{
+                                backgroundColor: getSentimentColor(
+                                  row.sentiment
+                                ),
+                              }}
+                            >
+                              {row.sentiment}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {(row.confidence * 100).toFixed(2)}%
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {row.priority}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {row.word_count}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Features Section */}
       <section id="features" className="py-20 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -486,7 +845,6 @@ const SentimentHomePage: React.FC = () => {
           </div>
 
           <div className="grid md:grid-cols-3 gap-8">
-            {/* Feature 1: Classification */}
             <div className="text-center p-8 rounded-2xl border border-green-100 hover:shadow-lg transition-shadow">
               <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center mx-auto mb-6">
                 <ClipboardCheck className="w-6 h-6 text-green-600" />
@@ -500,7 +858,6 @@ const SentimentHomePage: React.FC = () => {
               </p>
             </div>
 
-            {/* Feature 2: Visualization */}
             <div className="text-center p-8 rounded-2xl border border-blue-100 hover:shadow-lg transition-shadow">
               <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center mx-auto mb-6">
                 <BarChart3 className="w-6 h-6 text-blue-600" />
@@ -514,7 +871,6 @@ const SentimentHomePage: React.FC = () => {
               </p>
             </div>
 
-            {/* Feature 3: Tokenization/Preprocessing */}
             <div className="text-center p-8 rounded-2xl border border-orange-100 hover:shadow-lg transition-shadow">
               <div className="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center mx-auto mb-6">
                 <Lightbulb className="w-6 h-6 text-orange-600" />
@@ -535,7 +891,6 @@ const SentimentHomePage: React.FC = () => {
       <footer className="bg-gray-900 text-white py-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-            {/* Brand Section */}
             <div className="col-span-1 md:col-span-2">
               <div className="flex items-center space-x-3 mb-6">
                 <div className="bg-gradient-to-r from-orange-500 to-green-600 p-3 rounded-lg">
@@ -574,7 +929,6 @@ const SentimentHomePage: React.FC = () => {
               </div>
             </div>
 
-            {/* Links */}
             <div>
               <h4 className="text-lg font-semibold mb-4">Project Focus</h4>
               <ul className="space-y-3 text-gray-300">
@@ -585,7 +939,6 @@ const SentimentHomePage: React.FC = () => {
               </ul>
             </div>
 
-            {/* Authors */}
             <div>
               <h4 className="text-lg font-semibold mb-4">Team/Author</h4>
               <ul className="space-y-3 text-gray-300">
@@ -596,7 +949,6 @@ const SentimentHomePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Bottom Footer */}
           <div className="border-t border-gray-800 mt-12 pt-8">
             <div className="flex flex-col md:flex-row justify-between items-center">
               <div className="flex items-center space-x-4 mb-4 md:mb-0">
